@@ -30,13 +30,14 @@ limitations under the License.
 #include "xla/ffi/execution_context.h"
 #include "xla/ffi/ffi_api.h"
 #include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/status_matchers.h"
 #include "tsl/platform/test.h"
 #include "tsl/platform/test_benchmark.h"
-namespace xla::ffi {
 
+namespace xla::ffi {
 namespace {
 
 using ::testing::HasSubstr;
@@ -47,8 +48,7 @@ enum class Int32BasedEnum : int32_t {
   kTwo = 2,
 };
 
-constexpr const int64_t kI32MaxValue =
-    static_cast<int64_t>(std::numeric_limits<int32_t>::max());
+static constexpr int64_t kI32MaxValue = std::numeric_limits<int32_t>::max();
 
 enum class Int64BasedEnum : int64_t {
   kOne = kI32MaxValue + 1,
@@ -91,13 +91,67 @@ TEST(FfiTest, DataTypeEnumValue) {
   EXPECT_EQ(encoded(PrimitiveType::C128), encoded(DataType::C128));
 
   EXPECT_EQ(encoded(PrimitiveType::TOKEN), encoded(DataType::TOKEN));
+
+  EXPECT_EQ(encoded(PrimitiveType::F8E5M2), encoded(DataType::F8E5M2));
+  EXPECT_EQ(encoded(PrimitiveType::F8E4M3FN), encoded(DataType::F8E4M3FN));
+  EXPECT_EQ(encoded(PrimitiveType::F8E4M3B11FNUZ),
+            encoded(DataType::F8E4M3B11FNUZ));
+  EXPECT_EQ(encoded(PrimitiveType::F8E5M2FNUZ), encoded(DataType::F8E5M2FNUZ));
+  EXPECT_EQ(encoded(PrimitiveType::F8E4M3FNUZ), encoded(DataType::F8E4M3FNUZ));
+}
+
+TEST(FfiTest, ErrorEnumValue) {
+  // Verify that absl::StatusCode and xla::ffi::ErrorCode use the same
+  // integer value for encoding error (status) codes.
+  auto encoded = [](auto value) { return static_cast<uint8_t>(value); };
+
+  EXPECT_EQ(encoded(absl::StatusCode::kOk), encoded(ErrorCode::kOk));
+  EXPECT_EQ(encoded(absl::StatusCode::kCancelled),
+            encoded(ErrorCode::kCancelled));
+  EXPECT_EQ(encoded(absl::StatusCode::kUnknown), encoded(ErrorCode::kUnknown));
+  EXPECT_EQ(encoded(absl::StatusCode::kInvalidArgument),
+            encoded(ErrorCode::kInvalidArgument));
+  EXPECT_EQ(encoded(absl::StatusCode::kNotFound),
+            encoded(ErrorCode::kNotFound));
+  EXPECT_EQ(encoded(absl::StatusCode::kAlreadyExists),
+            encoded(ErrorCode::kAlreadyExists));
+  EXPECT_EQ(encoded(absl::StatusCode::kPermissionDenied),
+            encoded(ErrorCode::kPermissionDenied));
+  EXPECT_EQ(encoded(absl::StatusCode::kResourceExhausted),
+            encoded(ErrorCode::kResourceExhausted));
+  EXPECT_EQ(encoded(absl::StatusCode::kFailedPrecondition),
+            encoded(ErrorCode::kFailedPrecondition));
+  EXPECT_EQ(encoded(absl::StatusCode::kAborted), encoded(ErrorCode::kAborted));
+  EXPECT_EQ(encoded(absl::StatusCode::kOutOfRange),
+            encoded(ErrorCode::kOutOfRange));
+  EXPECT_EQ(encoded(absl::StatusCode::kUnimplemented),
+            encoded(ErrorCode::kUnimplemented));
+  EXPECT_EQ(encoded(absl::StatusCode::kInternal),
+            encoded(ErrorCode::kInternal));
+  EXPECT_EQ(encoded(absl::StatusCode::kUnavailable),
+            encoded(ErrorCode::kUnavailable));
+  EXPECT_EQ(encoded(absl::StatusCode::kDataLoss),
+            encoded(ErrorCode::kDataLoss));
+  EXPECT_EQ(encoded(absl::StatusCode::kUnauthenticated),
+            encoded(ErrorCode::kUnauthenticated));
+}
+
+TEST(FfiTest, ReturnError) {
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
+  auto call_frame = builder.Build();
+
+  auto handler = Ffi::Bind().To(
+      []() { return Error(ErrorCode::kInternal, "Test error"); });
+
+  auto status = Call(*handler, call_frame);
+  EXPECT_EQ(status, absl::InternalError("Test error"));
 }
 
 TEST(FfiTest, AnyBufferArgument) {
   std::vector<float> storage(4, 0.0f);
   se::DeviceMemoryBase memory(storage.data(), 4 * sizeof(float));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/1, /*num_rets=*/0);
   builder.AddBufferArg(memory, PrimitiveType::F32, /*dims=*/{2, 2});
   auto call_frame = builder.Build();
 
@@ -115,7 +169,7 @@ TEST(FfiTest, BufferArgument) {
   std::vector<float> storage(4, 0.0f);
   se::DeviceMemoryBase memory(storage.data(), 4 * sizeof(float));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/1, /*num_rets=*/0);
   builder.AddBufferArg(memory, PrimitiveType::F32, /*dims=*/{2, 2});
   auto call_frame = builder.Build();
 
@@ -134,7 +188,7 @@ TEST(FfiTest, AnyBufferResult) {
   std::vector<float> storage(4, 0.0f);
   se::DeviceMemoryBase memory(storage.data(), 4 * sizeof(float));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/1);
   builder.AddBufferRet(memory, PrimitiveType::F32, /*dims=*/{2, 2});
   auto call_frame = builder.Build();
 
@@ -149,7 +203,7 @@ TEST(FfiTest, AnyBufferResult) {
 }
 
 TEST(FfiTest, MissingBufferArgument) {
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   auto call_frame = builder.Build();
 
   auto handler = Ffi::Bind().Arg<BufferR1<DataType::F32>>().To(
@@ -164,7 +218,7 @@ TEST(FfiTest, WrongRankBufferArgument) {
   std::vector<int32_t> storage(4, 0.0);
   se::DeviceMemoryBase memory(storage.data(), 4 * sizeof(int32_t));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/1, /*num_rets=*/0);
   builder.AddBufferArg(memory, PrimitiveType::F32, /*dims=*/{2, 2});
   auto call_frame = builder.Build();
 
@@ -181,7 +235,7 @@ TEST(FfiTest, WrongTypeBufferArgument) {
   std::vector<int32_t> storage(4, 0.0);
   se::DeviceMemoryBase memory(storage.data(), 4 * sizeof(int32_t));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/1, /*num_rets=*/0);
   builder.AddBufferArg(memory, PrimitiveType::S32, /*dims=*/{2, 2});
   auto call_frame = builder.Build();
 
@@ -196,7 +250,7 @@ TEST(FfiTest, WrongTypeBufferArgument) {
 }
 
 TEST(FfiTest, TokenArgument) {
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/1, /*num_rets=*/0);
   builder.AddBufferArg(se::DeviceMemoryBase(), PrimitiveType::TOKEN,
                        /*dims=*/{});
   auto call_frame = builder.Build();
@@ -226,7 +280,7 @@ TEST(FfiTest, AutoBinding) {
   CallFrameBuilder::AttributesBuilder attrs;
   attrs.Insert(kI32, 42);
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/1, /*num_rets=*/0);
   builder.AddBufferArg(memory, PrimitiveType::F32, /*dims=*/{2, 2});
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
@@ -239,7 +293,7 @@ TEST(FfiTest, AutoBindingResult) {
   auto handler =
       Ffi::BindTo(+[](Result<AnyBuffer> buffer) { return Error::Success(); });
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/1);
   builder.AddBufferRet(se::DeviceMemoryBase(), PrimitiveType::F32, /*dims=*/{});
   auto call_frame = builder.Build();
 
@@ -266,7 +320,7 @@ TEST(FfiTest, AutoBindingStructs) {
   attrs.Insert("i32", 42);
   attrs.Insert("f32", 42.0f);
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 
@@ -285,7 +339,7 @@ TEST(FfiTest, AutoBindingDictionary) {
   attrs.Insert("i32", 42);
   attrs.Insert("f32", 42.0f);
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 
@@ -317,7 +371,7 @@ TEST(FfiTest, ArrayAttr) {
   attrs.Insert("arr4", std::vector<float>({1, 2, 3, 4}));
   attrs.Insert("arr5", std::vector<double>({1, 2, 3, 4}));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 
@@ -356,7 +410,7 @@ TEST(FfiTest, PointerAttr) {
   CallFrameBuilder::AttributesBuilder attrs;
   attrs.Insert("ptr", static_cast<int64_t>(ptr));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 
@@ -382,7 +436,7 @@ TEST(FfiTest, EnumAttr) {
   attrs.Insert("i64_two", static_cast<std::underlying_type_t<Int64BasedEnum>>(
                               Int64BasedEnum::kTwo));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 
@@ -408,27 +462,40 @@ TEST(FfiTest, EnumAttr) {
 }
 
 TEST(FfiTest, WrongEnumAttrType) {
-  CallFrameBuilder::AttributesBuilder attrs;
-  attrs.Insert("i32_enum", 42u);
+  CallFrameBuilder::FlatAttributesMap dict;
+  dict.try_emplace("i32", 42);
 
-  CallFrameBuilder builder;
+  CallFrameBuilder::AttributesBuilder attrs;
+  attrs.Insert("i32_enum1", dict);
+  attrs.Insert("i32_enum0", 42u);
+
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 
-  auto fn = [](Int32BasedEnum) { return Error::Success(); };
+  auto fn = [](Int32BasedEnum, Int32BasedEnum) { return Error::Success(); };
 
-  auto handler = Ffi::Bind().Attr<Int32BasedEnum>("i32_enum").To(fn);
+  auto handler = Ffi::Bind()
+                     .Attr<Int32BasedEnum>("i32_enum0")
+                     .Attr<Int32BasedEnum>("i32_enum1")
+                     .To(fn);
 
   auto status = Call(*handler, call_frame);
 
   EXPECT_TRUE(absl::StrContains(
       status.message(),
-      "Failed to decode all FFI handler operands (bad operands at: 0)"))
+      "Failed to decode all FFI handler operands (bad operands at: 0, 1)"))
       << "status.message():\n"
       << status.message() << "\n";
 
   EXPECT_TRUE(absl::StrContains(status.message(),
-                                "Wrong scalar data type: expected 4 but got"))
+                                "Wrong scalar data type: expected S32 but got"))
+      << "status.message():\n"
+      << status.message() << "\n";
+
+  EXPECT_TRUE(absl::StrContains(
+      status.message(),
+      "Wrong attribute type: expected scalar but got dictionary"))
       << "status.message():\n"
       << status.message() << "\n";
 }
@@ -448,7 +515,7 @@ TEST(FfiTest, UserData) {
   TF_ASSERT_OK(execution_context.Insert(
       ExecutionContext::TypeId(MyData::id.type_id), &data));
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   auto call_frame = builder.Build();
 
   auto fn = [&](MyData* data) {
@@ -466,6 +533,49 @@ TEST(FfiTest, UserData) {
   TF_ASSERT_OK(status);
 }
 
+TEST(FfiTest, ScratchAllocator) {
+  static void* kAddr = reinterpret_cast<void*>(0xDEADBEEF);
+
+  // A test only memory allocator that returns a fixed memory address.
+  struct TestDeviceMemoryAllocator final : public se::DeviceMemoryAllocator {
+    TestDeviceMemoryAllocator() : se::DeviceMemoryAllocator(nullptr) {}
+
+    absl::StatusOr<se::OwningDeviceMemory> Allocate(int, uint64_t size, bool,
+                                                    int64_t) final {
+      return se::OwningDeviceMemory(se::DeviceMemoryBase(kAddr, size), 0, this);
+    }
+
+    absl::Status Deallocate(int, se::DeviceMemoryBase mem) final {
+      EXPECT_EQ(mem.opaque(), kAddr);
+      return absl::OkStatus();
+    }
+
+    absl::StatusOr<se::Stream*> GetStream(int) final {
+      return absl::UnimplementedError("Not implemented");
+    }
+  };
+
+  auto fn = [&](ScratchAllocator scratch_allocator) {
+    auto mem = scratch_allocator.Allocate(1024);
+    EXPECT_EQ(*mem, kAddr);
+    return Error::Success();
+  };
+
+  TestDeviceMemoryAllocator allocator;
+
+  auto handler = Ffi::Bind().Ctx<ScratchAllocator>().To(fn);
+
+  CallFrame call_frame =
+      CallFrameBuilder(/*num_args=*/0, /*num_rets=*/0).Build();
+
+  CallOptions options;
+  options.allocator = &allocator;
+
+  auto status = Call(*handler, call_frame, options);
+
+  TF_ASSERT_OK(status);
+}
+
 //===----------------------------------------------------------------------===//
 // Performance benchmarks are below.
 //===----------------------------------------------------------------------===//
@@ -474,7 +584,7 @@ static CallFrameBuilder WithBufferArgs(size_t num_args, size_t rank = 4) {
   se::DeviceMemoryBase memory;
   std::vector<int64_t> dims(4, 1);
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/num_args, /*num_rets=*/0);
   for (size_t i = 0; i < num_args; ++i) {
     builder.AddBufferArg(memory, PrimitiveType::F32, dims);
   }
@@ -492,6 +602,7 @@ void BM_AnyBufferArgX1(benchmark::State& state) {
     benchmark::DoNotOptimize(buffer);
     return Error::Success();
   });
+
   for (auto _ : state) {
     CHECK_OK(Call(*handler, call_frame));
   }
@@ -537,6 +648,7 @@ void BM_BufferArgX1(benchmark::State& state) {
     benchmark::DoNotOptimize(buffer);
     return Error::Success();
   });
+
   for (auto _ : state) {
     CHECK_OK(Call(*handler, call_frame));
   }
@@ -572,6 +684,42 @@ void BM_BufferArgX4(benchmark::State& state) {
 BENCHMARK(BM_BufferArgX4);
 
 //===----------------------------------------------------------------------===//
+// BM_BufferArgX8
+//===----------------------------------------------------------------------===//
+
+void BM_BufferArgX8(benchmark::State& state) {
+  auto call_frame = WithBufferArgs(8).Build();
+
+  auto handler = Ffi::Bind()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .Arg<BufferR4<DataType::F32>>()
+                     .To([](auto b0, auto b1, auto b2, auto b3, auto b4,
+                            auto b5, auto b6, auto b7) {
+                       benchmark::DoNotOptimize(b0);
+                       benchmark::DoNotOptimize(b1);
+                       benchmark::DoNotOptimize(b2);
+                       benchmark::DoNotOptimize(b3);
+                       benchmark::DoNotOptimize(b4);
+                       benchmark::DoNotOptimize(b5);
+                       benchmark::DoNotOptimize(b6);
+                       benchmark::DoNotOptimize(b7);
+                       return Error::Success();
+                     });
+
+  for (auto _ : state) {
+    CHECK_OK(Call(*handler, call_frame));
+  }
+}
+
+BENCHMARK(BM_BufferArgX8);
+
+//===----------------------------------------------------------------------===//
 // BM_TupleOfI32Attrs
 //===----------------------------------------------------------------------===//
 
@@ -595,7 +743,7 @@ void BM_TupleOfI32Attrs(benchmark::State& state) {
   attrs.Insert("i32_2", 3);
   attrs.Insert("i32_3", 4);
 
-  CallFrameBuilder builder;
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 

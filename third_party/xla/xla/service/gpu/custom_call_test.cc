@@ -22,6 +22,8 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "xla/stream_executor/device_memory.h"
+
 #if GOOGLE_CUDA
 #include "third_party/gpus/cuda/include/cuda.h"  // IWYU pragma: keep
 #include "third_party/gpus/cuda/include/cuda_runtime_api.h"
@@ -51,6 +53,7 @@ limitations under the License.
 #include "xla/service/custom_call_target_registry.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
 #include "xla/stream_executor/scratch_allocator.h"
 #include "xla/stream_executor/stream.h"
@@ -379,10 +382,9 @@ TEST_F(CustomCallTest, RuntimeCustomCallAlwaysFail) {
 
 static absl::Status Memcpy(se::Stream* stream, ffi::AnyBuffer src,
                            ffi::Result<ffi::AnyBuffer> dst) {
-  return stream->MemcpyD2D(
-      &dst->data, src.data,
-      absl::c_accumulate(src.dimensions, 1.0, std::multiplies<int64_t>()) *
-          sizeof(float));
+  se::DeviceMemoryBase dst_mem = dst->device_memory();
+  se::DeviceMemoryBase src_mem = src.device_memory();
+  return stream->MemcpyD2D(&dst_mem, src_mem, src_mem.size());
 }
 
 XLA_FFI_DEFINE_HANDLER(kMemcpy, Memcpy,
@@ -662,9 +664,10 @@ TEST_F(CustomCallTest, FfiAttributes) {
 //===----------------------------------------------------------------------===//
 
 static absl::Status MemcpyWithCalledComputation(
-    se::Stream* stream, se::OwningScratchAllocator<> scratch_allocator,
-    ffi::AnyBuffer src, ffi::Result<ffi::AnyBuffer> dst,
-    const HloComputation* called_computation) {
+    se::Stream* stream, int32_t device_ordinal,
+    se::DeviceMemoryAllocator* allocator,
+    se::OwningScratchAllocator<> scratch_allocator, ffi::AnyBuffer src,
+    ffi::Result<ffi::AnyBuffer> dst, const HloComputation* called_computation) {
   if (called_computation == nullptr)
     return absl::InternalError("Called computation is not defined");
 
@@ -685,6 +688,8 @@ XLA_FFI_DEFINE_HANDLER(kMemcpyWithCalledComputation,
                        MemcpyWithCalledComputation,
                        ffi::Ffi::Bind()
                            .Ctx<ffi::Stream>()
+                           .Ctx<ffi::DeviceOrdinal>()     // device_ordinal
+                           .Ctx<ffi::Allocator>()         // allocator
                            .Ctx<ffi::ScratchAllocator>()  // scratch
                            .Arg<ffi::AnyBuffer>()         // src
                            .Ret<ffi::AnyBuffer>()         // dst

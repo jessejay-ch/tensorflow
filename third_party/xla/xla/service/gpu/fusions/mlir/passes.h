@@ -19,10 +19,6 @@ limitations under the License.
 #include <optional>
 #include <string>
 
-#include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project  // IWYU pragma: keep
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"  // from @llvm-project  // IWYU pragma: keep
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"  // from @llvm-project  // IWYU pragma: keep
-#include "mlir/Dialect/SCF/IR/SCF.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "xla/service/gpu/model/indexing_map.h"
 
@@ -43,6 +39,7 @@ std::unique_ptr<mlir::Pass> CreateLowerTensorsPass(
 std::unique_ptr<mlir::Pass> CreateLowerToLLVMPass();
 std::unique_ptr<mlir::Pass> CreateLowerXlaGpuToScfPass();
 std::unique_ptr<mlir::Pass> CreateMergePointersToSameSlicePass();
+std::unique_ptr<mlir::Pass> CreateOptimizeLoopsPass();
 std::unique_ptr<mlir::Pass> CreatePropagateSliceIndicesPass();
 std::unique_ptr<mlir::Pass> CreateSimplifyAffinePass();
 std::unique_ptr<mlir::Pass> CreateSimplifyArithPass();

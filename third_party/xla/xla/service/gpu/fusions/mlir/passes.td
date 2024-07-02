@@ -136,7 +136,8 @@ def ExpandFloatOpsPass : Pass<"xla-gpu-expand-float-ops", "mlir::ModuleOp"> {
   }];
 
   let dependentDialects = [
-    "mlir::arith::ArithDialect", "mlir::mhlo::MhloDialect"
+    "mlir::arith::ArithDialect", "mlir::math::MathDialect",
+    "mlir::mhlo::MhloDialect"
   ];
 
   let options = [
@@ -181,7 +182,9 @@ def LowerToLLVMPass :
   }];
 
   let dependentDialects = [
-    "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"
+    "mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::NVVM::NVVMDialect",
   ];
 
   let constructor = "CreateLowerToLLVMPass()";
@@ -202,6 +205,23 @@ def VectorizeLoadsAndStoresPass :
   ];
 
   let constructor = "CreateVectorizeLoadsAndStoresPass()";
+}
+
+def OptimizeLoopsPass :
+   Pass<"xla-gpu-optimize-loops", "mlir::func::FuncOp"> {
+  let summary = "Unrolls and pipelines loops.";
+
+  let description = [{
+    Unrolls loops with a small trip count. Pipelines loops with a large trip
+    count.
+  }];
+
+  let dependentDialects = [
+    "mlir::vector::VectorDialect",
+    "xla::gpu::XlaGpuDialect",
+  ];
+
+  let constructor = "CreateOptimizeLoopsPass()";
 }
 
 def UnswitchLoopsPass :

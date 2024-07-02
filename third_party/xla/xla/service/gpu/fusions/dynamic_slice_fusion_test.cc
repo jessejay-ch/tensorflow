@@ -27,11 +27,12 @@ limitations under the License.
 #include "xla/ffi/ffi_api.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/custom_call_target_registry.h"
-#include "xla/service/gpu/address_computation_fusion_rewriter.h"
+#include "xla/service/gpu/dynamic_slice_fusion_rewriter.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/tests/hlo_test_base.h"
@@ -835,10 +836,9 @@ TEST_F(DynamicSliceFusionTest, SlicedOperandAliasingOutput) {
 
 static absl::Status Memcpy(se::Stream* stream, ffi::AnyBuffer src,
                            ffi::Result<ffi::AnyBuffer> dst) {
-  return stream->MemcpyD2D(
-      &dst->data, src.data,
-      absl::c_accumulate(src.dimensions, 1.0, std::multiplies<int64_t>()) *
-          sizeof(float));
+  se::DeviceMemoryBase dst_mem = dst->device_memory();
+  se::DeviceMemoryBase src_mem = src.device_memory();
+  return stream->MemcpyD2D(&dst_mem, src_mem, src_mem.size());
 }
 
 XLA_FFI_DEFINE_HANDLER(kMemcpy, Memcpy,
@@ -875,7 +875,7 @@ TEST_F(DynamicSliceFusionTest, CustomCallSimple) {
 
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -908,23 +908,32 @@ static absl::Status SubBuffers(
   //  dst5:  result at tuple index {4}, shape f32[3,128]
   //  dst6:  result at tuple index {5}, shape f32[96]
 
+  se::DeviceMemoryBase dst0_mem = dst0->device_memory();
+  se::DeviceMemoryBase dst1_mem = dst1->device_memory();
+  se::DeviceMemoryBase dst2_mem = dst2->device_memory();
+  se::DeviceMemoryBase dst3_mem = dst3->device_memory();
+  se::DeviceMemoryBase dst4_mem = dst4->device_memory();
+  se::DeviceMemoryBase dst5_mem = dst5->device_memory();
+  se::DeviceMemoryBase dst6_mem = dst6->device_memory();
+
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst0->data, src3.data, 8 * sizeof(float)));
+      stream->MemcpyD2D(&dst0_mem, src3.device_memory(), 8 * sizeof(float)));
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst1->data, src0.data, 128 * sizeof(float)));
+      stream->MemcpyD2D(&dst1_mem, src0.device_memory(), 128 * sizeof(float)));
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst2->data, src1.data, 256 * sizeof(float)));
+      stream->MemcpyD2D(&dst2_mem, src1.device_memory(), 256 * sizeof(float)));
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst3->data, src2.data, 1024 * sizeof(float)));
+      stream->MemcpyD2D(&dst3_mem, src2.device_memory(), 1024 * sizeof(float)));
+  TF_RETURN_IF_ERROR(stream->MemcpyD2D(&dst4_mem, src4.device_memory(),
+                                       4 * 8 * sizeof(float)));
+  TF_RETURN_IF_ERROR(stream->MemcpyD2D(&dst5_mem, src7.device_memory(),
+                                       3 * 128 * sizeof(float)));
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst4->data, src4.data, 4 * 8 * sizeof(float)));
-  TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst5->data, src7.data, 3 * 128 * sizeof(float)));
-  TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst6->data, src6.data, 64 * sizeof(float)));
+      stream->MemcpyD2D(&dst6_mem, src6.device_memory(), 64 * sizeof(float)));
   stream_executor::DeviceMemoryBase slice =
-      dst6->data.GetByteSlice(64 * sizeof(float), 32 * sizeof(float));
-  TF_RETURN_IF_ERROR(stream->MemcpyD2D(&slice, src6.data, 32 * sizeof(float)));
+      dst6_mem.GetByteSlice(64 * sizeof(float), 32 * sizeof(float));
+  TF_RETURN_IF_ERROR(
+      stream->MemcpyD2D(&slice, src6.device_memory(), 32 * sizeof(float)));
   return absl::OkStatus();
 }
 
@@ -1012,7 +1021,7 @@ TEST_F(DynamicSliceFusionTest, CustomCallWithTuple) {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
 
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -1061,7 +1070,7 @@ TEST_F(DynamicSliceFusionTest, NilTuple) {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
 
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -1105,7 +1114,7 @@ TEST_F(DynamicSliceFusionTest, CustomCallLegacyAPI) {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
 
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -1143,7 +1152,7 @@ TEST_F(DynamicSliceFusionTest, NilTupleLegacyAPI) {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
 
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -2459,7 +2468,7 @@ TEST_F(DynamicSliceFusionTest, DynamicCustomCallSimple) {
 
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -2534,7 +2543,7 @@ TEST_F(DynamicSliceFusionTest, DynamicCustomCallWithTuple) {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
 
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -2565,20 +2574,28 @@ static absl::Status SubBuffers2(
   //  dst5:  result at tuple index {4, 0}, shape f32[5,128]
   //  dst6:  result at tuple index {4, 1}, shape f32[3,128]
 
+  se::DeviceMemoryBase dst0_mem = dst0->device_memory();
+  se::DeviceMemoryBase dst1_mem = dst1->device_memory();
+  se::DeviceMemoryBase dst2_mem = dst2->device_memory();
+  se::DeviceMemoryBase dst3_mem = dst3->device_memory();
+  se::DeviceMemoryBase dst4_mem = dst4->device_memory();
+  se::DeviceMemoryBase dst5_mem = dst5->device_memory();
+  se::DeviceMemoryBase dst6_mem = dst6->device_memory();
+
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst0->data, src3.data, 8 * sizeof(float)));
+      stream->MemcpyD2D(&dst0_mem, src3.device_memory(), 8 * sizeof(float)));
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst1->data, src0.data, 128 * sizeof(float)));
+      stream->MemcpyD2D(&dst1_mem, src0.device_memory(), 128 * sizeof(float)));
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst2->data, src1.data, 256 * sizeof(float)));
+      stream->MemcpyD2D(&dst2_mem, src1.device_memory(), 256 * sizeof(float)));
   TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst3->data, src2.data, 1024 * sizeof(float)));
-  TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst4->data, src4.data, 4 * 8 * sizeof(float)));
-  TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst5->data, src6.data, 5 * 128 * sizeof(float)));
-  TF_RETURN_IF_ERROR(
-      stream->MemcpyD2D(&dst6->data, src5.data, 3 * 128 * sizeof(float)));
+      stream->MemcpyD2D(&dst3_mem, src2.device_memory(), 1024 * sizeof(float)));
+  TF_RETURN_IF_ERROR(stream->MemcpyD2D(&dst4_mem, src4.device_memory(),
+                                       4 * 8 * sizeof(float)));
+  TF_RETURN_IF_ERROR(stream->MemcpyD2D(&dst5_mem, src6.device_memory(),
+                                       5 * 128 * sizeof(float)));
+  TF_RETURN_IF_ERROR(stream->MemcpyD2D(&dst6_mem, src5.device_memory(),
+                                       3 * 128 * sizeof(float)));
   return absl::OkStatus();
 }
 
@@ -2633,7 +2650,7 @@ TEST_F(DynamicSliceFusionTest, CustomCallDUS) {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
 
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 
@@ -2729,7 +2746,7 @@ TEST_F(DynamicSliceFusionTest, CustomCallDUSTuple) {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_opt, xla::HloModule::CreateFromProto(
                                             computation.proto(), hlo_config));
 
-  AddressComputationFusionRewriter pass(PLATFORM);
+  DynamicSliceFusionRewriter pass(PLATFORM);
   TF_ASSERT_OK_AND_ASSIGN(auto changed, this->RunHloPass(&pass, hlo_opt.get()));
   EXPECT_TRUE(changed);
 

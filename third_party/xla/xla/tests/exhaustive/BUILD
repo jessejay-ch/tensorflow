@@ -41,24 +41,18 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "exhaustive_unary_test_f32_or_smaller_lib",
+filegroup(
+    name = "exhaustive_unary_f32_or_smaller_test_lib_srcs",
     testonly = True,
-    srcs = ["exhaustive_unary_test_f32_or_smaller.cc"],
-    tags = ["no_pip"],
-    deps = [
-        ":exhaustive_op_test_utils",
-        "//xla:util",
-        "//xla/client:xla_builder",
-        "//xla/client/lib:math",
-        "//xla/tests:client_library_test_base",
-        "@com_google_absl//absl/flags:flag",
-    ],
+    srcs = ["exhaustive_unary_f32_or_smaller_test.cc"],
 )
 
 xla_test(
-    name = "exhaustive_unary_test_f32_or_smaller",
-    srcs = ["exhaustive_test_main.cc"],
+    name = "exhaustive_unary_f32_or_smaller_test",
+    srcs = [
+        "exhaustive_test_main.cc",
+        "exhaustive_unary_f32_or_smaller_test.cc",
+    ],
     backends = [
         "gpu",
         "cpu",
@@ -72,15 +66,21 @@ xla_test(
         "no_oss",
     ],
     deps = [
-        ":exhaustive_unary_test_f32_or_smaller_lib",
+        "//xla:types",
+        "//xla:util",
+        "//xla/client:xla_builder",
+        "//xla/client/lib:math",
+        "//xla/tests:client_library_test_base",
+        "//xla/tests/exhaustive:exhaustive_op_test_utils",
+        "@com_google_absl//absl/flags:flag",
         "@local_tsl//tsl/platform",
         "@local_tsl//tsl/platform:test",
     ],
 )
 
 xla_test(
-    name = "exhaustive_unary_test_f64",
-    srcs = ["exhaustive_unary_test_f64.cc"],
+    name = "exhaustive_unary_f64_test",
+    srcs = ["exhaustive_unary_f64_test.cc"],
     backends = [
         "gpu",
         "cpu",
@@ -104,8 +104,8 @@ xla_test(
 )
 
 xla_test(
-    name = "exhaustive_unary_test_complex",
-    srcs = ["exhaustive_unary_test_complex.cc"],
+    name = "exhaustive_unary_complex_test",
+    srcs = ["exhaustive_unary_complex_test.cc"],
     backends = [
         "gpu",
         "cpu",

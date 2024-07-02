@@ -114,9 +114,10 @@ absl::Status CheckNestedComputationThreadNameEqual(
     for (const HloComputation* called_cmp : instr->called_computations()) {
       if (called_cmp->execution_thread() != comp->execution_thread()) {
         return Internal(
-            "Nested computations expects same computation's thread name (%s vs "
-            "%s).",
-            called_cmp->execution_thread(), comp->execution_thread());
+            "Nested computations expects same computation's thread name: %s vs "
+            "%s, in called computation `%s` vs caller computation `%s`",
+            called_cmp->execution_thread(), comp->execution_thread(),
+            called_cmp->name(), comp->name());
       }
       TF_RETURN_IF_ERROR(CheckNestedComputationThreadNameEqual(
           called_cmp, skip_nested_async_op_check));
@@ -1282,9 +1283,21 @@ absl::Status ShapeVerifier::HandleFusion(HloInstruction* fusion) {
     const Shape& operand_subshape = ShapeUtil::GetSubshape(
         casted_fusion->operand(pair.second.first)->shape(), pair.second.second);
     if (opts_.layout_sensitive) {
-      TF_RET_CHECK(operand_subshape == output_subshape)
-          << "Different aliasing shapes: " << operand_subshape.ToString()
-          << " vs " << output_subshape.ToString();
+      if (casted_fusion->IsFused()) {
+        // Nested fusions can have aliasing that does not require the
+        // tiling/memory space assignment to be the same in order to alias.
+        TF_RET_CHECK(
+            Shape::Equal().IgnoreTilesInLayout().IgnoreMemorySpaceInLayout()(
+                operand_subshape, output_subshape))
+            << "Different aliasing shapes: "
+            << operand_subshape.ToString(/*print_layout=*/true) << " vs "
+            << output_subshape.ToString(/*print_layout=*/true);
+      } else {
+        TF_RET_CHECK(Shape::Equal()(operand_subshape, output_subshape))
+            << "Different aliasing shapes: "
+            << operand_subshape.ToString(/*print_layout=*/true) << " vs "
+            << output_subshape.ToString(/*print_layout=*/true);
+      }
     } else {
       TF_RET_CHECK(ShapeUtil::Compatible(output_subshape, operand_subshape))
           << "Different aliasing shapes: " << operand_subshape.ToString()
@@ -1308,7 +1321,8 @@ absl::Status ShapeVerifier::HandleCustomCall(HloInstruction* instruction) {
   const HloCustomCallInstruction* custom_call =
       DynCast<const HloCustomCallInstruction>(instruction);
   TF_RET_CHECK(custom_call != nullptr);
-  if (custom_call->layout_constrained()) {
+  if (custom_call->layout_constrained() &&
+      !custom_call->IsCustomCall("LayoutConstraint")) {
     // If the layout is constrained, verify all the respective shapes have
     // layouts and that the constrained operand shapes match the shapes of the
     // operands.
@@ -1895,8 +1909,9 @@ absl::Status ShapeVerifier::CheckShape(
           // For DynamicUpdateSlice it has an "in-place" update semantics, but
           // inside of fusions memory space propagation doesn't propagate the
           // memory spaces all the way, causing possible mismatches. Relax the
-          // constraint in that condition.
-          equal.IgnoreMemorySpaceInLayout();
+          // constraint in that condition. Tiling also is not necessarily
+          // meaningful within fusions, so we can relax this as well.
+          equal.IgnoreMemorySpaceInLayout().IgnoreTilesInLayout();
         }
         return ShapesSame(instruction->shape(), inferred_shape, equal);
       }
